@@ -427,7 +427,7 @@ class HopBridge extends Base {
       populatedTx.from = await this.getGasEstimateFromAddress(sourceChain, destinationChain)
     }
 
-    return sourceChain.provider.estimateGas(populatedTx) 
+    return sourceChain.provider.estimateGas(populatedTx)
   }
 
   public async getSendEstimatedGasCost (
