@@ -226,7 +226,7 @@ class L1ToL2Watcher extends BaseWatcher {
           url = 'https://matic-testnet-archive-rpc.bwarelabs.com'
         }
         if (url) {
-          provider = new providers.StaticJsonRpcProvider(url)
+          provider = new providers.JsonRpcProvider(url)
         }
 
         const l2Bridge = await this.bridge.getL2Bridge(Chain.Polygon, provider)
