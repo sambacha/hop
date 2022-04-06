@@ -5,6 +5,7 @@ import { program } from './shared'
 
 import './bondTransferRoot'
 import './bondWithdrawal'
+import './bondTransferRoot'
 import './challenger'
 import './commitTransfers'
 import './contractState'
