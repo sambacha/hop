@@ -1,6 +1,7 @@
 import Logger from 'src/logger'
 import chainIdToSlug from 'src/utils/chainIdToSlug'
 import getBlockNumberFromDate from 'src/utils/getBlockNumberFromDate'
+import getBondedWithdrawal from 'src/theGraph/getBondedWithdrawal'
 import getRpcProvider from 'src/utils/getRpcProvider'
 import getTokenDecimals from 'src/utils/getTokenDecimals'
 import l1BridgeAbi from '@hop-protocol/core/abi/generated/L1_Bridge.json'
@@ -9,6 +10,7 @@ import wait from 'src/utils/wait'
 import { BigNumber, Contract } from 'ethers'
 import { Chain } from 'src/constants'
 import { DateTime } from 'luxon'
+import { chunk } from 'lodash'
 import { formatUnits } from 'ethers/lib/utils'
 import { mainnet as mainnetAddresses } from '@hop-protocol/core/addresses'
 
@@ -96,9 +98,9 @@ class IncompleteSettlementsWatcher {
     this.logger.debug('this will take a minute')
 
     for (const chain of this.chains) {
+      const promises: Array<Promise<any>> = []
       for (const token of this.tokens) {
         this.logger.debug(`${chain} ${token} reading events`)
-        const promises: Array<Promise<any>> = []
         if (['optimism', 'arbitrum'].includes(chain) && token === 'MATIC') {
           continue
         }
@@ -111,9 +113,9 @@ class IncompleteSettlementsWatcher {
         promises.push(this.setMultipleWithdrawalsSettleds(chain, token))
         promises.push(this.setWithdrawalBondSettleds(chain, token))
         promises.push(this.setWithdrews(chain, token))
-        await Promise.all(promises)
         this.logger.debug(`${chain} ${token} done reading events`)
       }
+      await Promise.all(promises)
     }
 
     this.logger.debug('done reading all events')
@@ -339,7 +341,8 @@ class IncompleteSettlementsWatcher {
     this.logger.debug('checking settled amount diffs')
     this.logger.debug(`roots to check: ${rootsCount}`)
 
-    for (const rootHash in this.rootHashTotals) {
+    const rootHashes = Object.keys(this.rootHashTotals)
+    await Promise.all(rootHashes.map(async (rootHash: string) => {
       const { sourceChain, destinationChain, token } = this.rootHashMeta[rootHash]
       const totalAmount = this.rootHashTotals[rootHash]
       const timestamp = this.rootHashTimestamps[rootHash]
@@ -352,9 +355,14 @@ class IncompleteSettlementsWatcher {
       const diff = totalAmount.sub(settledTotalAmount).toString()
       const diffFormatted = Number(formatUnits(diff, tokenDecimals))
       const isIncomplete = diffFormatted > 0 && (settledTotalAmount.eq(0) || !settledTotalAmount.eq(totalAmount))
+      let unsettledTransfers: any[] = []
+      let unsettledTransferBonders: string[] = []
       if (isIncomplete) {
         const settlementEvents = this.rootHashSettlements[rootHash]?.length ?? 0
         const withdrewEvents = this.rootHashWithdrews[rootHash]?.length ?? 0
+        const [_unsettledTransfers, _unsettledTransferBonders] = await this.getUnsettledTransfers(rootHash)
+        unsettledTransfers = _unsettledTransfers
+        unsettledTransferBonders = _unsettledTransferBonders
         incompletes.push({
           timestamp,
           timestampRelative,
@@ -368,11 +376,13 @@ class IncompleteSettlementsWatcher {
           rootHash,
           settlementEvents,
           withdrewEvents,
-          isConfirmed
+          isConfirmed,
+          unsettledTransfers,
+          unsettledTransferBonders
         })
       }
-      this.logger.debug(`root: ${rootHash}, token: ${token}, isAllSettled: ${!isIncomplete}, isConfirmed: ${isConfirmed}, totalAmount: ${totalAmountFormatted}, diff: ${diffFormatted}`)
-    }
+      this.logger.debug(`root: ${rootHash}, token: ${token}, isAllSettled: ${!isIncomplete}, isConfirmed: ${isConfirmed}, totalAmount: ${totalAmountFormatted}, diff: ${diffFormatted}, unsettledTransfers: ${JSON.stringify(unsettledTransfers)}, unsettledTransferBonders: ${JSON.stringify(unsettledTransferBonders)}`)
+    }))
 
     incompletes = incompletes.sort((a, b) => (a.timestamp > b.timestamp ? -1 : 1))
 
@@ -396,6 +406,41 @@ class IncompleteSettlementsWatcher {
     }
 
     return result
+  }
+
+  private async getUnsettledTransfers (rootHash: string) {
+    const { sourceChain, destinationChain, token } = this.rootHashMeta[rootHash]
+    const tokenDecimals = getTokenDecimals(token)
+    const contract = this.getContract(destinationChain, token)
+    const transferIds = await this.rootTransferIds[rootHash]
+    const unsettledTransfers: any[] = []
+    const unsettledTransferBonders = new Set()
+    const chunkSize = 30
+    const allChunks = chunk(transferIds, chunkSize)
+    for (const chunks of allChunks) {
+      await Promise.all(chunks.map(async (transferId: string) => {
+        const bondWithdrawalEvent = await getBondedWithdrawal(destinationChain, token, transferId)
+        if (!bondWithdrawalEvent) {
+          return
+        }
+        const bonder = bondWithdrawalEvent.from
+        const bondedWithdrawalAmount = await contract.getBondedWithdrawalAmount(bonder, transferId)
+        if (bondedWithdrawalAmount.gt(0)) {
+          const amount = bondedWithdrawalAmount.toString()
+          const amountFormatted = Number(formatUnits(amount, tokenDecimals))
+          unsettledTransfers.push({
+            transferId,
+            bonder,
+            amount,
+            amountFormatted
+          })
+        }
+        unsettledTransferBonders.add(bonder)
+      }))
+    }
+
+    const _bonders = Array.from(unsettledTransfers.length ? new Set(unsettledTransfers.map((x: any) => x.bonder)) : unsettledTransferBonders)
+    return [unsettledTransfers, _bonders]
   }
 
   private async logResult (result: any) {

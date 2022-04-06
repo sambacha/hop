@@ -59,6 +59,13 @@ type UnbondedTransferRoot = {
   totalAmountFormatted: number
 }
 
+type UnsettledTransfer = {
+  transferId: string
+  bonder: string
+  amount: string
+  amountFormatted: number
+}
+
 type IncompleteSettlement = {
   timestamp: number
   transferRootHash: string
@@ -71,6 +78,8 @@ type IncompleteSettlement = {
   diffAmountFormatted: number
   settlementEvents: number
   withdrewEvents: number
+  unsettledTransfers: UnsettledTransfer[]
+  unsettledTransferBonders: string[]
   isConfirmed: boolean
 }
 
@@ -132,7 +141,7 @@ export class HealthCheckWatcher {
   }
 
   bonderLowLiquidityThreshold: number = 0.10
-  unbondedTransfersMinTimeToWaitMinutes: number = 20
+  unbondedTransfersMinTimeToWaitMinutes: number = 80
   unbondedTransferRootsMinTimeToWaitHours: number = 6
   incompleteSettlemetsMinTimeToWaitHours: number = 12
   minSubgraphSyncDiffBlockNumber: number = 500
@@ -479,6 +488,7 @@ export class HealthCheckWatcher {
     })
     let result = await incompleteSettlementsWatcher.getDiffResults()
     result = result.filter((x: any) => timestamp > (Number(x.timestamp) + (this.incompleteSettlemetsMinTimeToWaitHours * 60 * 60)))
+    result = result.filter((x: any) => x.diffFormatted > 0.01)
     this.logger.debug('done fetching incomplete settlements')
     return result.map((item: any) => {
       return {
@@ -490,10 +500,12 @@ export class HealthCheckWatcher {
         totalAmount: item.totalAmount,
         totalAmountFormatted: item.totalAmountFormatted,
         diffAmount: item.diff,
-        diffAmountFormatted: Number(item.diffFormatted),
+        diffAmountFormatted: item.diffFormatted,
         settlementEvents: item.settlementEvents,
         withdrewEvents: item.withdrewEvents,
-        isConfirmed: item.isConfirmed
+        isConfirmed: item.isConfirmed,
+        unsettledTransfers: item.unsettledTransfers,
+        unsettledTransferBonders: item.unsettledTransferBonders
       }
     })
   }
