@@ -48,7 +48,8 @@ export const populateUnbondedTransfers = (item: any) => {
     timestamp: DateTime.fromSeconds(item.timestamp).toRelative(),
     transferId: item.transferId,
     transactionHash: item.transactionHash,
-    amount: item.amountFormatted?.toFixed(4)
+    amount: item.amountFormatted?.toFixed(4),
+    bonderFee: item.bonderFeeFormatted?.toFixed(4)
   }
 }
 
@@ -79,6 +80,9 @@ export const populateIncompleteSettlements = (item: any) => {
     }
   })
   const unsettledTransferBonders = item.unsettledTransferBonders ?? []
+  const unbondedTransfers = (item.unsettledTransfers ?? []).filter((x: any) => {
+    return !x.bonded
+  })
 
   return {
     timestamp: DateTime.fromSeconds(item.timestamp).toRelative(),
@@ -90,8 +94,10 @@ export const populateIncompleteSettlements = (item: any) => {
     diffAmount: item.diffAmountFormatted?.toFixed(4),
     settlementEvents: item.settlementEvents,
     withdrewEvents: item.withdrewEvents,
+    transfersCount: item.transfersCount,
     unsettledTransfers,
     unsettledTransferBonders,
+    unbondedTransfers: unbondedTransfers.length,
     isConfirmed: `${item.isConfirmed}`,
   }
 }
@@ -140,25 +146,25 @@ function useData() {
       if (result?.timestamp) {
         setLastUpdated(DateTime.fromMillis(result.timestamp).toRelative() as string)
       }
-      if (result?.data?.lowBonderBalances) {
+      if (Array.isArray(result?.data?.lowBonderBalances)) {
         setLowBonderBalances(result.data.lowBonderBalances)
       }
-      if (result?.data?.lowAvailableLiquidityBonders) {
+      if (Array.isArray(result?.data?.lowAvailableLiquidityBonders)) {
         setLowAvailableLiquidityBonders(result.data.lowAvailableLiquidityBonders)
       }
-      if (result?.data?.unbondedTransfers) {
+      if (Array.isArray(result?.data?.unbondedTransfers)) {
         setUnbondedTransfers(result.data.unbondedTransfers)
       }
-      if (result?.data?.unbondedTransferRoots) {
+      if (Array.isArray(result?.data?.unbondedTransferRoots)) {
         setUnbondedTransferRoots(result.data.unbondedTransferRoots)
       }
-      if (result?.data?.incompleteSettlements) {
+      if (Array.isArray(result?.data?.incompleteSettlements)) {
         setIncompleteSettlements(result.data.incompleteSettlements)
       }
-      if (result?.data?.challengedTransferRoots) {
+      if (Array.isArray(result?.data?.challengedTransferRoots)) {
         setChallengedTransferRoots(result.data.challengedTransferRoots)
       }
-      if (result?.data?.unsyncedSubgraphs) {
+      if (Array.isArray(result?.data?.unsyncedSubgraphs)) {
         setUnsyncedSubgraphs(result.data.unsyncedSubgraphs)
       }
     } catch (err) {
@@ -230,7 +236,7 @@ const Health = () => {
                 </CellWrapper>
               )
   const lowBonderBalancesColumns = [{
-    Header: 'Low Bonder Balances',
+    Header: `Low Bonder Balances (${lowBonderBalances.length})`,
     columns: [
       {
         Header: 'Bridge',
@@ -255,7 +261,7 @@ const Health = () => {
     ]
   }]
   const lowAvailableLiquidityBondersColumns = [{
-    Header: 'Low Available Liquidity Bonders',
+    Header: `Low Available Liquidity Bonders (${lowAvailableLiquidityBonders.length})`,
     columns: [
       {
         Header: 'Bridge',
@@ -275,7 +281,7 @@ const Health = () => {
     ]
   }]
   const unbondedTransfersColumns = [{
-    Header: 'Unbonded Transfers',
+    Header: `Unbonded Transfers (${unbondedTransfers.length})`,
     columns: [
       {
         Header: 'Date',
@@ -312,10 +318,15 @@ const Health = () => {
         accessor: 'amount',
         Cell: cellNumber,
       },
+      {
+        Header: 'Bonder Fee',
+        accessor: 'bonderFee',
+        Cell: cellNumber,
+      },
     ]
   }]
   const unbondedTransferRootsColumns = [{
-    Header: 'Unbonded Transfer Roots',
+    Header: `Unbonded Transfer Roots (${unbondedTransferRoots.length})`,
     columns: [
       {
         Header: 'Date',
@@ -350,7 +361,7 @@ const Health = () => {
     ]
   }]
   const incompleteSettlementsColumns = [{
-    Header: 'Incomplete Settlements',
+    Header: `Incomplete Settlements (${incompleteSettlements.length})`,
     columns: [
       {
         Header: 'Date',
@@ -390,12 +401,22 @@ const Health = () => {
       {
         Header: 'Settlement Events',
         accessor: 'settlementEvents',
-        Cell: cell,
+        Cell: cellNumber,
       },
       {
         Header: 'Withdrew Events',
         accessor: 'withdrewEvents',
-        Cell: cell,
+        Cell: cellNumber,
+      },
+      {
+        Header: 'Transfers Count',
+        accessor: 'transfersCount',
+        Cell: cellNumber,
+      },
+      {
+        Header: 'Unbonded Transfers',
+        accessor: 'unbondedTransfers',
+        Cell: cellNumber,
       },
       {
         Header: 'Unsettled Transfer Bonder(s)',
@@ -410,7 +431,7 @@ const Health = () => {
     ]
   }]
   const challengedTransferRootsColumns = [{
-    Header: 'Challenged Transfer Roots',
+    Header: `Challenged Transfer Roots (${challengedTransferRoots.length})`,
     columns: [
       {
         Header: 'Token',
@@ -440,7 +461,7 @@ const Health = () => {
     ]
   }]
   const unsyncedSubgraphsColumns = [{
-    Header: 'Unsynced Subgraphs',
+    Header: `Unsynced Subgraphs (${unsyncedSubgraphs.length})`,
     columns: [
       {
         Header: 'Chain',

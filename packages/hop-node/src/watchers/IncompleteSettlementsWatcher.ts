@@ -4,6 +4,7 @@ import getBlockNumberFromDate from 'src/utils/getBlockNumberFromDate'
 import getBondedWithdrawal from 'src/theGraph/getBondedWithdrawal'
 import getRpcProvider from 'src/utils/getRpcProvider'
 import getTokenDecimals from 'src/utils/getTokenDecimals'
+import getTransfer from 'src/theGraph/getTransfer'
 import l1BridgeAbi from '@hop-protocol/core/abi/generated/L1_Bridge.json'
 import l2BridgeAbi from '@hop-protocol/core/abi/generated/L2_Bridge.json'
 import wait from 'src/utils/wait'
@@ -348,7 +349,8 @@ class IncompleteSettlementsWatcher {
       const timestamp = this.rootHashTimestamps[rootHash]
       const isConfirmed = !!this.rootHashConfirmeds[rootHash]
       const tokenDecimals = getTokenDecimals(token)
-      const settledTotalAmount = this.rootHashSettledTotalAmounts[rootHash] ?? BigNumber.from(0)
+      // const settledTotalAmount = this.rootHashSettledTotalAmounts[rootHash] ?? BigNumber.from(0)
+      const settledTotalAmount = await this.getOnchainTotalAmountWithdrawn(destinationChain, token, rootHash, totalAmount)
       const timestampRelative = DateTime.fromSeconds(timestamp).toRelative()
       const _totalAmount = totalAmount.toString()
       const totalAmountFormatted = Number(formatUnits(_totalAmount, tokenDecimals))
@@ -360,9 +362,10 @@ class IncompleteSettlementsWatcher {
       if (isIncomplete) {
         const settlementEvents = this.rootHashSettlements[rootHash]?.length ?? 0
         const withdrewEvents = this.rootHashWithdrews[rootHash]?.length ?? 0
-        const [_unsettledTransfers, _unsettledTransferBonders] = await this.getUnsettledTransfers(rootHash)
+        const [_unsettledTransfers, _unsettledTransferBonders, transferIds] = await this.getUnsettledTransfers(rootHash)
         unsettledTransfers = _unsettledTransfers
         unsettledTransferBonders = _unsettledTransferBonders
+        const transfersCount = transferIds.length
         incompletes.push({
           timestamp,
           timestampRelative,
@@ -376,6 +379,7 @@ class IncompleteSettlementsWatcher {
           rootHash,
           settlementEvents,
           withdrewEvents,
+          transfersCount,
           isConfirmed,
           unsettledTransfers,
           unsettledTransferBonders
@@ -421,6 +425,15 @@ class IncompleteSettlementsWatcher {
       await Promise.all(chunks.map(async (transferId: string) => {
         const bondWithdrawalEvent = await getBondedWithdrawal(destinationChain, token, transferId)
         if (!bondWithdrawalEvent) {
+          const { amount } = await getTransfer(sourceChain, token, transferId)
+          const amountFormatted = Number(formatUnits(amount, tokenDecimals))
+          unsettledTransfers.push({
+            bonded: false,
+            transferId,
+            bonder: null,
+            amount,
+            amountFormatted
+          })
           return
         }
         const bonder = bondWithdrawalEvent.from
@@ -429,18 +442,24 @@ class IncompleteSettlementsWatcher {
           const amount = bondedWithdrawalAmount.toString()
           const amountFormatted = Number(formatUnits(amount, tokenDecimals))
           unsettledTransfers.push({
+            bonded: true,
             transferId,
             bonder,
             amount,
             amountFormatted
           })
+          unsettledTransferBonders.add(bonder)
         }
-        unsettledTransferBonders.add(bonder)
       }))
     }
 
-    const _bonders = Array.from(unsettledTransfers.length ? new Set(unsettledTransfers.map((x: any) => x.bonder)) : unsettledTransferBonders)
-    return [unsettledTransfers, _bonders]
+    return [unsettledTransfers, Array.from(unsettledTransferBonders), transferIds]
+  }
+
+  private async getOnchainTotalAmountWithdrawn (destinationChain: string, token: string, transferRootHash: string, totalAmount: BigNumber) {
+    const contract = this.getContract(destinationChain, token)
+    const { total, amountWithdrawn } = await contract.getTransferRoot(transferRootHash, totalAmount)
+    return amountWithdrawn
   }
 
   private async logResult (result: any) {

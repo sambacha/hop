@@ -47,6 +47,8 @@ type UnbondedTransfer = {
   transactionHash: string
   amount: string
   amountFormatted: number
+  bonderFee: string
+  bonderFeeFormatted: number
 }
 
 type UnbondedTransferRoot = {
@@ -61,7 +63,8 @@ type UnbondedTransferRoot = {
 
 type UnsettledTransfer = {
   transferId: string
-  bonder: string
+  bonded: boolean
+  bonder: string | null
   amount: string
   amountFormatted: number
 }
@@ -78,6 +81,7 @@ type IncompleteSettlement = {
   diffAmountFormatted: number
   settlementEvents: number
   withdrewEvents: number
+  transfersCount: number
   unsettledTransfers: UnsettledTransfer[]
   unsettledTransferBonders: string[]
   isConfirmed: boolean
@@ -144,7 +148,14 @@ export class HealthCheckWatcher {
   unbondedTransfersMinTimeToWaitMinutes: number = 80
   unbondedTransferRootsMinTimeToWaitHours: number = 6
   incompleteSettlemetsMinTimeToWaitHours: number = 12
-  minSubgraphSyncDiffBlockNumber: number = 500
+  minSubgraphSyncDiffBlockNumbers: Record<string, number> = {
+    [Chain.Ethereum]: 45,
+    [Chain.Polygon]: 300,
+    [Chain.Gnosis]: 120,
+    [Chain.Optimism]: 100,
+    [Chain.Arbitrum]: 100
+  }
+
   enabledChecks: Record<string, boolean> = {
     lowBonderBalances: true,
     unbondedTransfers: true,
@@ -241,29 +252,35 @@ export class HealthCheckWatcher {
     } = result
 
     const messages: string[] = []
-    for (const item of lowBonderBalances) {
-      const msg = `LowBonderBalance: bonder: ${item.bonder}, chain: ${item.chain}, amount: ${item.amountFormatted} ${item.nativeToken}`
-      messages.push(msg)
-    }
 
-    for (const item of unbondedTransfers) {
-      const msg = `UnbondedTransfer: transferId: ${item.transferId}, source: ${item.sourceChain}, destination: ${item.destinationChain}, amount: ${item.amountFormatted}, token: ${item.token}, transferSentAt: ${item.timestamp}`
-      messages.push(msg)
-    }
+    if (!unsyncedSubgraphs.length) {
+      for (const item of lowBonderBalances) {
+        const msg = `LowBonderBalance: bonder: ${item.bonder}, chain: ${item.chain}, amount: ${item.amountFormatted?.toFixed(2)} ${item.nativeToken}`
+        messages.push(msg)
+      }
 
-    for (const item of unbondedTransferRoots) {
-      const msg = `UnbondedTransferRoot: transferRootHash: ${item.transferRootHash}, source: ${item.sourceChain}, destination: ${item.destinationChain}, totalAmount: ${item.totalAmountFormatted}, token: ${item.token}, committedAt: ${item.timestamp}`
-      messages.push(msg)
-    }
+      for (const item of unbondedTransfers) {
+        const timestampRelative = DateTime.fromSeconds(item.timestamp).toRelative()
+        const msg = `UnbondedTransfer: transferId: ${item.transferId}, source: ${item.sourceChain}, destination: ${item.destinationChain}, amount: ${item.amountFormatted?.toFixed(4)}, bonderFee: ${item.bonderFeeFormatted?.toFixed(4)}, token: ${item.token}, transferSentAt: ${item.timestamp} (${timestampRelative})`
+        messages.push(msg)
+      }
 
-    for (const item of incompleteSettlements) {
-      const msg = `IncompleteSettlements: transferRootHash: ${item.transferRootHash}, source: ${item.sourceChain}, destination: ${item.destinationChain}, totalAmount: ${item.totalAmountFormatted}, diffAmount: ${item.diffAmountFormatted}, token: ${item.token}, committedAt: ${item.timestamp}`
-      messages.push(msg)
-    }
+      for (const item of unbondedTransferRoots) {
+        const timestampRelative = DateTime.fromSeconds(item.timestamp).toRelative()
+        const msg = `UnbondedTransferRoot: transferRootHash: ${item.transferRootHash}, source: ${item.sourceChain}, destination: ${item.destinationChain}, totalAmount: ${item.totalAmountFormatted?.toFixed(4)}, token: ${item.token}, committedAt: ${item.timestamp} (${timestampRelative})`
+        messages.push(msg)
+      }
 
-    for (const item of challengedTransferRoots) {
-      const msg = `ChallengedTransferRoot: transferRootHash: ${item.transferRootHash}, transferRootId: ${item.transferRootId}, originalAmount: ${item.originalAmountFormatted}, token: ${item.token}`
-      messages.push(msg)
+      for (const item of incompleteSettlements) {
+        const timestampRelative = DateTime.fromSeconds(item.timestamp).toRelative()
+        const msg = `IncompleteSettlements: transferRootHash: ${item.transferRootHash}, source: ${item.sourceChain}, destination: ${item.destinationChain}, totalAmount: ${item.totalAmountFormatted?.toFixed(4)}, diffAmount: ${item.diffAmountFormatted?.toFixed(4)}, token: ${item.token}, committedAt: ${item.timestamp} (${timestampRelative})`
+        messages.push(msg)
+      }
+
+      for (const item of challengedTransferRoots) {
+        const msg = `ChallengedTransferRoot: transferRootHash: ${item.transferRootHash}, transferRootId: ${item.transferRootId}, originalAmount: ${item.originalAmountFormatted?.toFixed(4)}, token: ${item.token}`
+        messages.push(msg)
+      }
     }
 
     for (const item of unsyncedSubgraphs) {
@@ -304,8 +321,8 @@ export class HealthCheckWatcher {
     this.logger.debug('poll')
 
     const result = await this.getResult()
-    await this.sendNotifications(result)
     await this.uploadToS3(result)
+    await this.sendNotifications(result)
   }
 
   private async getLowBonderBalances (): Promise<LowBonderBalance[]> {
@@ -372,7 +389,7 @@ export class HealthCheckWatcher {
       }
     }
 
-    this.logger.debug(JSON.stringify(result, null, 2))
+    this.logger.debug('lowBonderBalances:', JSON.stringify(result, null, 2))
 
     return result
   }
@@ -385,6 +402,9 @@ export class HealthCheckWatcher {
 
     for (const token of this.tokens) {
       const tokenData = json.data[token]
+      if (!tokenData) {
+        continue
+      }
       const chainAmounts: any = {}
       const totalLiquidity = this.bonderTotalLiquidity[token]
       const availableAmounts = tokenData.baseAvailableCreditIncludingVault
@@ -426,6 +446,13 @@ export class HealthCheckWatcher {
     let result = await getUnbondedTransfers(this.days)
     result = result.filter((x: any) => timestamp > (Number(x.timestamp) + (this.unbondedTransfersMinTimeToWaitMinutes * 60)))
     result = result.filter((x: any) => x.sourceChainSlug !== Chain.Ethereum)
+    result = result.filter((x: any) => {
+      const ignoreBonderFeeToLow = x.bonderFeeFormatted === 0 || (x.token === 'ETH' && x.bonderFeeFormatted < 0.0035 && [Chain.Ethereum, Chain.Optimism, Chain.Arbitrum].includes(x.destinationChainSlug))
+      if (ignoreBonderFeeToLow) {
+        return false
+      }
+      return true
+    })
 
     this.logger.debug(`unbonded transfers: ${result.length}`)
     this.logger.debug('done checking for unbonded transfers')
@@ -438,7 +465,9 @@ export class HealthCheckWatcher {
         transferId: item.transferId,
         transactionHash: item.transactionHash,
         amount: item.amount,
-        amountFormatted: Number(item.formattedAmount)
+        amountFormatted: Number(item.formattedAmount),
+        bonderFee: item.bonderFee,
+        bonderFeeFormatted: Number(item.formattedBonderFee)
       }
     })
   }
@@ -503,6 +532,7 @@ export class HealthCheckWatcher {
         diffAmountFormatted: item.diffFormatted,
         settlementEvents: item.settlementEvents,
         withdrewEvents: item.withdrewEvents,
+        transfersCount: item.transfersCount,
         isConfirmed: item.isConfirmed,
         unsettledTransfers: item.unsettledTransfers,
         unsettledTransferBonders: item.unsettledTransferBonders
@@ -558,7 +588,7 @@ export class HealthCheckWatcher {
       const headBlockNumber = Number((await provider.getBlockNumber()).toString())
       const diffBlockNumber = headBlockNumber - syncedBlockNumber
       this.logger.debug(`subgraph sync status: syncedBlockNumber: chain: ${chain}, ${syncedBlockNumber}, headBlockNumber: ${headBlockNumber}, diffBlockNumber: ${diffBlockNumber}`)
-      if (diffBlockNumber > this.minSubgraphSyncDiffBlockNumber) {
+      if (diffBlockNumber > this.minSubgraphSyncDiffBlockNumbers[chain]) {
         result.push({
           chain,
           headBlockNumber,
